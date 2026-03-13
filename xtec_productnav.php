@@ -12,7 +12,7 @@ class Xtec_productnav extends Module
         $this->name = 'xtec_productnav';
         $this->tab = 'front_office_features';
         $this->version = '1.0.1';
-        $this->author = 'OpenAI for XTec';
+        $this->author = 'AndRed.it';
         $this->need_instance = 0;
         $this->bootstrap = true;
 

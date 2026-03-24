@@ -325,7 +325,6 @@
     var currentId = String(root.getAttribute('data-current-product-id') || '').trim();
     var showPrice = String(root.getAttribute('data-show-price') || '1') === '1';
     var context = readContext();
-console.log('XPN readContext', context);
     if (!currentId || !context) {
       root.classList.add('xpn-block--hidden');
       return;

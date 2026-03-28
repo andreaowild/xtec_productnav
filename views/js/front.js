@@ -2,7 +2,10 @@
   'use strict';
 
   var STORAGE_KEY = 'xtecProductNavContext';
+  var FULL_CONTEXT_PREFIX = 'xtecProductNavFullContext:';
   var MAX_AGE_MS = 24 * 60 * 60 * 1000;
+  var MAX_REMOTE_PAGES = 100;
+  var fullContextRequests = Object.create(null);
 
   var PRODUCT_CARD_SELECTOR = 'article.product-miniature, .js-product-miniature';
   var PRODUCT_LINK_SELECTOR = [
@@ -41,6 +44,14 @@
     }
 
     return root.querySelectorAll(PRODUCT_CARD_SELECTOR).length;
+  }
+
+  function isFeaturedProductsRoot(root) {
+    return !!(root && root.classList && root.classList.contains('featured-products'));
+  }
+
+  function shouldUseRemoteListing(root) {
+    return !isFeaturedProductsRoot(root) && !isProductPage();
   }
 
   function safeUrl(value) {
@@ -93,7 +104,7 @@
   }
 
   function getContextTitle(root) {
-    if (root && root.classList && root.classList.contains('featured-products')) {
+    if (isFeaturedProductsRoot(root)) {
       var sectionTitle = root.querySelector('.block-title, .h2, .h3, h2, h3');
       return normalizeText(sectionTitle ? sectionTitle.textContent : '');
     }
@@ -103,7 +114,7 @@
   }
 
   function getContextType(root) {
-    if (root && root.classList && root.classList.contains('featured-products')) {
+    if (isFeaturedProductsRoot(root)) {
       return 'featured-products';
     }
 
@@ -170,27 +181,293 @@
     });
   }
 
+  function normalizeListingUrl(value) {
+    var href = safeUrl(value || window.location.href);
+
+    if (!href) {
+      return '';
+    }
+
+    try {
+      var url = new URL(href);
+      url.hash = '';
+      url.searchParams.delete('page');
+      url.searchParams.delete('ajax');
+      url.searchParams.delete('from-xhr');
+      url.searchParams.delete('resultsPerPage');
+
+      return url.href;
+    } catch (error) {
+      return '';
+    }
+  }
+
+  function buildFullContextStorageKey(listingUrl) {
+    return FULL_CONTEXT_PREFIX + listingUrl;
+  }
+
+  function getPaginationPageCount() {
+    var pageCount = 1;
+    var selectors = [
+      '.pagination [href*="page="]',
+      '.pagination [data-page]',
+      '.js-search-link[href*="page="]'
+    ];
+
+    selectors.forEach(function (selector) {
+      Array.prototype.forEach.call(document.querySelectorAll(selector), function (node) {
+        var value = '';
+
+        if (node.getAttribute) {
+          value = node.getAttribute('data-page') || node.getAttribute('href') || '';
+        }
+
+        if (!value) {
+          return;
+        }
+
+        try {
+          var page = 0;
+
+          if (/^\d+$/.test(value)) {
+            page = parseInt(value, 10);
+          } else {
+            page = parseInt(new URL(value, window.location.origin).searchParams.get('page') || '0', 10);
+          }
+
+          if (page > pageCount) {
+            pageCount = page;
+          }
+        } catch (error) {
+        }
+      });
+    });
+
+    return Math.min(Math.max(pageCount, 1), MAX_REMOTE_PAGES);
+  }
+
+  function mapAjaxProduct(product) {
+    if (!product || !product.id_product) {
+      return null;
+    }
+
+    var image = '';
+
+    if (product.cover) {
+      if (typeof product.cover.bySize === 'object' && product.cover.bySize) {
+        if (product.cover.bySize.home_default && product.cover.bySize.home_default.url) {
+          image = product.cover.bySize.home_default.url;
+        } else {
+          Object.keys(product.cover.bySize).some(function (sizeKey) {
+            var size = product.cover.bySize[sizeKey];
+
+            if (size && size.url) {
+              image = size.url;
+              return true;
+            }
+
+            return false;
+          });
+        }
+      }
+
+      if (!image && product.cover.large && product.cover.large.url) {
+        image = product.cover.large.url;
+      }
+
+      if (!image && product.cover.medium && product.cover.medium.url) {
+        image = product.cover.medium.url;
+      }
+
+      if (!image && product.cover.small && product.cover.small.url) {
+        image = product.cover.small.url;
+      }
+
+      if (!image && product.cover.url) {
+        image = product.cover.url;
+      }
+    }
+
+    var url = safeUrl(product.url || product.canonical_url || '');
+    var id = String(product.id_product || '').trim();
+
+    if (!id || !url) {
+      return null;
+    }
+
+    return {
+      id: id,
+      url: url,
+      name: normalizeText(product.name || ''),
+      image: safeUrl(image),
+      price: normalizeText(product.price || '')
+    };
+  }
+
+  function buildContext(root, products, listingUrl) {
+    return {
+      type: getContextType(root),
+      title: getContextTitle(root),
+      updatedAt: Date.now(),
+      url: listingUrl || window.location.href,
+      origin: window.location.origin,
+      products: products
+    };
+  }
+
+  function isFreshContext(context) {
+    return !!(
+      context &&
+      Array.isArray(context.products) &&
+      context.updatedAt &&
+      (Date.now() - context.updatedAt) <= MAX_AGE_MS
+    );
+  }
+
+  function saveFullListingContext(listingUrl, context) {
+    if (!listingUrl || !isFreshContext(context)) {
+      return false;
+    }
+
+    try {
+      sessionStorage.setItem(buildFullContextStorageKey(listingUrl), JSON.stringify(context));
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function readFullListingContext(listingUrl) {
+    if (!listingUrl) {
+      return null;
+    }
+
+    try {
+      var raw = sessionStorage.getItem(buildFullContextStorageKey(listingUrl));
+
+      if (!raw) {
+        return null;
+      }
+
+      var context = JSON.parse(raw);
+
+      if (!isFreshContext(context)) {
+        return null;
+      }
+
+      if (context.origin && context.origin !== window.location.origin) {
+        return null;
+      }
+
+      return context;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function fetchFullListingContext(root) {
+    var listingUrl = normalizeListingUrl(window.location.href);
+    var cachedContext = readFullListingContext(listingUrl);
+
+    if (cachedContext) {
+      return Promise.resolve(cachedContext);
+    }
+
+    if (!listingUrl) {
+      return Promise.resolve(null);
+    }
+
+    if (fullContextRequests[listingUrl]) {
+      return fullContextRequests[listingUrl];
+    }
+
+    try {
+      var totalPages = getPaginationPageCount();
+      var pageNumbers = [];
+      var seen = Object.create(null);
+
+      for (var i = 1; i <= totalPages; i += 1) {
+        pageNumbers.push(i);
+      }
+
+      function fetchListingPage(page) {
+        var requestUrl = new URL(listingUrl);
+        requestUrl.searchParams.set('page', String(page));
+        requestUrl.searchParams.set('ajax', '1');
+        requestUrl.searchParams.set('from-xhr', '1');
+
+        return fetch(requestUrl.href, {
+          credentials: 'same-origin',
+          headers: {
+            'X-Requested-With': 'XMLHttpRequest'
+          }
+        }).then(function (response) {
+          if (!response.ok) {
+            return [];
+          }
+
+          return response.json();
+        }).then(function (payload) {
+          if (!payload || !Array.isArray(payload.products)) {
+            return [];
+          }
+
+          return payload.products.map(mapAjaxProduct).filter(function (item) {
+            if (!item || seen[item.id]) {
+              return false;
+            }
+
+            seen[item.id] = true;
+            return true;
+          });
+        }).catch(function () {
+          return [];
+        });
+      }
+
+      fullContextRequests[listingUrl] = Promise.all(pageNumbers.map(fetchListingPage)).then(function (pages) {
+        var products = [];
+
+        pages.forEach(function (pageItems) {
+          products = products.concat(pageItems);
+        });
+
+        if (products.length < 2) {
+          return null;
+        }
+
+        var context = buildContext(root, products, listingUrl);
+        saveFullListingContext(listingUrl, context);
+
+        return context;
+      }).then(function (context) {
+        delete fullContextRequests[listingUrl];
+        return context;
+      });
+
+      return fullContextRequests[listingUrl];
+    } catch (error) {
+      return Promise.resolve(null);
+    }
+  }
+
   function persistContext(root) {
-    var products = collectProducts(root);
+    var listingUrl = shouldUseRemoteListing(root)
+      ? normalizeListingUrl(window.location.href)
+      : window.location.href;
+    var fullContext = shouldUseRemoteListing(root)
+      ? readFullListingContext(listingUrl)
+      : null;
+    var products = fullContext && Array.isArray(fullContext.products) && fullContext.products.length >= 2
+      ? fullContext.products
+      : collectProducts(root);
 
     if (!products || products.length < 2) {
       return false;
     }
 
-    var context = {
-      type: getContextType(root),
-      title: getContextTitle(root),
-      updatedAt: Date.now(),
-      url: window.location.href,
-      origin: window.location.origin,
-      products: products
-    };
-    console.log('XPN persistContext', {
-      type: getContextType(root),
-      title: getContextTitle(root),
-      count: products.length,
-      root: root
-    });
+    var context = buildContext(root, products, listingUrl);
+
     try {
       sessionStorage.setItem(STORAGE_KEY, JSON.stringify(context));
       return true;
@@ -446,6 +723,20 @@
     document.addEventListener('click', saveFromEvent, true);
   }
 
+  function hydrateFullListingContext(root) {
+    if (!shouldUseRemoteListing(root)) {
+      return;
+    }
+
+    fetchFullListingContext(root).then(function (context) {
+      if (!context || !Array.isArray(context.products) || context.products.length < 2) {
+        return;
+      }
+
+      persistContext(root);
+    });
+  }
+
   function initListingObservers() {
     var containers = document.querySelectorAll('#js-product-list, #products, .products, .js-product-list');
 
@@ -457,6 +748,7 @@
       var main = document.querySelector('#js-product-list, #products, .products, .js-product-list');
       if (main) {
         persistContext(main);
+        hydrateFullListingContext(main);
       }
     }, 150);
 
@@ -477,18 +769,19 @@
     initListingObservers();
 
     if (!isProductPage()) {
-    var cards = document.querySelectorAll(PRODUCT_CARD_SELECTOR);
+      var cards = document.querySelectorAll(PRODUCT_CARD_SELECTOR);
 
-    if (cards.length >= 2) {
-      var firstCardLink = cards[0].querySelector(PRODUCT_LINK_SELECTOR);
-      if (firstCardLink) {
-        var initialRoot = findContextRootFromLink(firstCardLink);
-        if (initialRoot) {
-          persistContext(initialRoot);
+      if (cards.length >= 2) {
+        var firstCardLink = cards[0].querySelector(PRODUCT_LINK_SELECTOR);
+        if (firstCardLink) {
+          var initialRoot = findContextRootFromLink(firstCardLink);
+          if (initialRoot) {
+            persistContext(initialRoot);
+            hydrateFullListingContext(initialRoot);
+          }
         }
       }
     }
-  }
 
     if (isProductPage()) {
       renderProductNavigation();

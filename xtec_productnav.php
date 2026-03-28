@@ -52,6 +52,15 @@ class Xtec_productnav extends Module
         $output = '';
 
         if (Tools::isSubmit('submitXtecProductNav')) {
+            $submittedToken = (string) Tools::getValue('xtec_productnav_token');
+            $expectedToken = Tools::getAdminTokenLite('AdminModules');
+
+            if (!hash_equals($expectedToken, $submittedToken)) {
+                return $this->displayError(
+                    $this->trans('Invalid security token.', [], 'Admin.Notifications.Error')
+                ) . $this->renderForm();
+            }
+
             Configuration::updateValue(
                 self::CONFIG_SHOW_PRICE,
                 (int) Tools::getValue(self::CONFIG_SHOW_PRICE, 1)
@@ -69,6 +78,7 @@ class Xtec_productnav extends Module
     {
         $formAction = htmlspecialchars($_SERVER['REQUEST_URI'] ?? '', ENT_QUOTES, 'UTF-8');
         $showPrice = (int) Configuration::get(self::CONFIG_SHOW_PRICE, 1);
+        $formToken = htmlspecialchars(Tools::getAdminTokenLite('AdminModules'), ENT_QUOTES, 'UTF-8');
 
         $html = [];
         $html[] = '<div class="panel">';
@@ -79,6 +89,7 @@ class Xtec_productnav extends Module
             'Modules.Xtec_productnav.Admin'
         ) . '</p>';
         $html[] = '<form method="post" action="' . $formAction . '">';
+        $html[] = '  <input type="hidden" name="xtec_productnav_token" value="' . $formToken . '">';
         $html[] = '  <div class="form-group">';
         $html[] = '    <label class="control-label">' . $this->trans('Show price in navigation cards', [], 'Modules.Xtec_productnav.Admin') . '</label>';
         $html[] = '    <select class="form-control fixed-width-xl" name="' . self::CONFIG_SHOW_PRICE . '">';

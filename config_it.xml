@@ -2,7 +2,7 @@
 <module>
     <name>xtec_productnav</name>
     <displayName><![CDATA[XTec Product Navigation]]></displayName>
-    <version><![CDATA[1.0.1]]></version>
+    <version><![CDATA[1.1.4]]></version>
     <description><![CDATA[Adds previous and next product navigation on the product page, based on the last category or search listing visited by the customer.]]></description>
     <author><![CDATA[AndRed.it]]></author>
     <tab><![CDATA[front_office_features]]></tab>
